@@ -1,6 +1,6 @@
 from rest_framework import serializers
-from rest_framework_gis.serializers import GeoFeatureModelSerializer
 from django.contrib.auth.models import User
+from django.utils import timezone
 from .models import (
     Vehicle, Trip, Organization, Driver, LocationHistory,
     Geofence, GeofenceAlert, MaintenanceRecord
@@ -59,35 +59,27 @@ class DriverListSerializer(serializers.ModelSerializer):
         return obj.user.get_full_name()
 
 
-class LocationHistorySerializer(GeoFeatureModelSerializer):
+class LocationHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = LocationHistory
-        geo_field = 'location'
-        fields = ['id', 'vehicle', 'timestamp', 'speed', 'heading',
+        fields = ['id', 'vehicle', 'latitude', 'longitude', 'timestamp', 'speed', 'heading',
                   'altitude', 'accuracy', 'battery_level', 'is_ignition_on']
         read_only_fields = ['id']
 
 
 class LocationHistoryCreateSerializer(serializers.ModelSerializer):
-    latitude = serializers.FloatField(write_only=True)
-    longitude = serializers.FloatField(write_only=True)
-
     class Meta:
         model = LocationHistory
         fields = ['vehicle', 'latitude', 'longitude', 'timestamp', 'speed',
                   'heading', 'altitude', 'accuracy', 'battery_level', 'is_ignition_on']
 
     def create(self, validated_data):
-        from django.contrib.gis.geos import Point
-        latitude = validated_data.pop('latitude')
-        longitude = validated_data.pop('longitude')
-        validated_data['location'] = Point(longitude, latitude)
-
         location_history = LocationHistory.objects.create(**validated_data)
 
         vehicle = validated_data['vehicle']
-        vehicle.last_location = validated_data['location']
-        vehicle.save(update_fields=['last_location', 'last_updated'])
+        vehicle.last_latitude = validated_data['latitude']
+        vehicle.last_longitude = validated_data['longitude']
+        vehicle.save(update_fields=['last_latitude', 'last_longitude', 'last_updated'])
 
         return location_history
 
@@ -101,7 +93,7 @@ class VehicleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Vehicle
         fields = ['id', 'organization', 'organization_name', 'plate', 'type', 'brand', 'model',
-                  'year', 'vin', 'last_location', 'last_updated', 'current_driver',
+                  'year', 'vin', 'last_latitude', 'last_longitude', 'last_updated', 'current_driver',
                   'fuel_level', 'odometer', 'status', 'is_active', 'max_speed',
                   'current_speed', 'is_moving', 'created_at']
         read_only_fields = ['id', 'last_updated', 'created_at']
@@ -120,7 +112,7 @@ class VehicleListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Vehicle
         fields = ['id', 'plate', 'type', 'brand', 'model', 'status',
-                  'last_location', 'last_updated', 'current_driver_name', 'current_speed']
+                  'last_latitude', 'last_longitude', 'last_updated', 'current_driver_name', 'current_speed']
 
     def get_current_driver_name(self, obj):
         return obj.current_driver.user.get_full_name() if obj.current_driver else None
@@ -129,16 +121,15 @@ class VehicleListSerializer(serializers.ModelSerializer):
         return obj.get_current_speed()
 
 
-class VehicleDetailSerializer(GeoFeatureModelSerializer):
+class VehicleDetailSerializer(serializers.ModelSerializer):
     current_driver = DriverListSerializer(read_only=True)
     recent_locations = serializers.SerializerMethodField()
     organization_name = serializers.CharField(source='organization.name', read_only=True)
 
     class Meta:
         model = Vehicle
-        geo_field = 'last_location'
         fields = ['id', 'organization', 'organization_name', 'plate', 'type', 'brand', 'model',
-                  'year', 'vin', 'last_updated', 'current_driver', 'fuel_level',
+                  'year', 'vin', 'last_latitude', 'last_longitude', 'last_updated', 'current_driver', 'fuel_level',
                   'odometer', 'status', 'is_active', 'max_speed', 'created_at', 'recent_locations']
         read_only_fields = ['id', 'last_updated', 'created_at']
 
@@ -155,9 +146,9 @@ class TripSerializer(serializers.ModelSerializer):
     class Meta:
         model = Trip
         fields = ['id', 'vehicle', 'vehicle_plate', 'driver', 'driver_name',
-                  'start_time', 'end_time', 'start_location', 'end_location',
-                  'distance', 'duration', 'duration_formatted', 'max_speed',
-                  'avg_speed', 'fuel_consumed', 'status', 'notes']
+                  'start_time', 'end_time', 'start_latitude', 'start_longitude',
+                  'end_latitude', 'end_longitude', 'distance', 'duration', 'duration_formatted',
+                  'max_speed', 'avg_speed', 'fuel_consumed', 'status', 'notes']
         read_only_fields = ['id', 'duration']
 
     def get_driver_name(self, obj):
@@ -172,17 +163,16 @@ class TripSerializer(serializers.ModelSerializer):
         return None
 
 
-class TripDetailSerializer(GeoFeatureModelSerializer):
+class TripDetailSerializer(serializers.ModelSerializer):
     vehicle = VehicleListSerializer(read_only=True)
     driver = DriverListSerializer(read_only=True)
     route = serializers.SerializerMethodField()
 
     class Meta:
         model = Trip
-        geo_field = 'start_location'
         fields = ['id', 'vehicle', 'driver', 'start_time', 'end_time',
-                  'end_location', 'distance', 'duration', 'max_speed',
-                  'avg_speed', 'fuel_consumed', 'status', 'notes', 'route']
+                  'start_latitude', 'start_longitude', 'end_latitude', 'end_longitude',
+                  'distance', 'duration', 'max_speed', 'avg_speed', 'fuel_consumed', 'status', 'notes', 'route']
         read_only_fields = ['id', 'duration']
 
     def get_route(self, obj):
@@ -194,12 +184,11 @@ class TripDetailSerializer(GeoFeatureModelSerializer):
         return LocationHistorySerializer(locations, many=True).data
 
 
-class GeofenceSerializer(GeoFeatureModelSerializer):
+class GeofenceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Geofence
-        geo_field = 'center'
         fields = ['id', 'organization', 'name', 'description', 'geofence_type',
-                  'radius', 'polygon', 'is_active', 'created_at']
+                  'center_latitude', 'center_longitude', 'radius', 'is_active', 'created_at']
         read_only_fields = ['id', 'created_at']
 
 
@@ -211,7 +200,7 @@ class GeofenceAlertSerializer(serializers.ModelSerializer):
     class Meta:
         model = GeofenceAlert
         fields = ['id', 'geofence', 'geofence_name', 'vehicle', 'vehicle_plate',
-                  'alert_type', 'timestamp', 'location', 'acknowledged',
+                  'alert_type', 'timestamp', 'latitude', 'longitude', 'acknowledged',
                   'acknowledged_at', 'acknowledged_by', 'acknowledged_by_name']
         read_only_fields = ['id', 'timestamp']
 

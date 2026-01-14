@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.contrib.gis.admin import GISModelAdmin
 from .models import (
     Organization, Driver, Vehicle, LocationHistory,
     Trip, Geofence, GeofenceAlert, MaintenanceRecord
@@ -27,7 +28,7 @@ class DriverAdmin(admin.ModelAdmin):
 
 
 @admin.register(Vehicle)
-class VehicleAdmin(admin.ModelAdmin):
+class VehicleAdmin(GISModelAdmin):
     list_display = ['plate', 'type', 'brand', 'model', 'organization', 'current_driver', 'status', 'fuel_level', 'is_active', 'last_updated']
     list_filter = ['type', 'status', 'is_active', 'organization', 'created_at']
     search_fields = ['plate', 'brand', 'model', 'vin']
@@ -41,7 +42,7 @@ class VehicleAdmin(admin.ModelAdmin):
             'fields': ('status', 'is_active', 'current_driver')
         }),
         ('Location & Tracking', {
-            'fields': ('last_latitude', 'last_longitude', 'last_updated')
+            'fields': ('last_location', 'last_updated')
         }),
         ('Metrics', {
             'fields': ('fuel_level', 'odometer', 'max_speed')
@@ -53,8 +54,8 @@ class VehicleAdmin(admin.ModelAdmin):
 
 
 @admin.register(LocationHistory)
-class LocationHistoryAdmin(admin.ModelAdmin):
-    list_display = ['vehicle', 'latitude', 'longitude', 'timestamp', 'speed', 'heading', 'battery_level', 'is_ignition_on']
+class LocationHistoryAdmin(GISModelAdmin):
+    list_display = ['vehicle', 'timestamp', 'speed', 'heading', 'battery_level', 'is_ignition_on']
     list_filter = ['vehicle', 'timestamp', 'is_ignition_on']
     search_fields = ['vehicle__plate']
     readonly_fields = ['timestamp']
@@ -63,7 +64,7 @@ class LocationHistoryAdmin(admin.ModelAdmin):
 
 
 @admin.register(Trip)
-class TripAdmin(admin.ModelAdmin):
+class TripAdmin(GISModelAdmin):
     list_display = ['id', 'vehicle', 'driver', 'start_time', 'end_time', 'distance', 'status', 'avg_speed']
     list_filter = ['status', 'vehicle__type', 'start_time']
     search_fields = ['vehicle__plate', 'driver__user__first_name', 'driver__user__last_name']
@@ -78,7 +79,7 @@ class TripAdmin(admin.ModelAdmin):
             'fields': ('start_time', 'end_time', 'duration')
         }),
         ('Location', {
-            'fields': ('start_latitude', 'start_longitude', 'end_latitude', 'end_longitude')
+            'fields': ('start_location', 'end_location')
         }),
         ('Metrics', {
             'fields': ('distance', 'max_speed', 'avg_speed', 'fuel_consumed')
@@ -91,8 +92,8 @@ class TripAdmin(admin.ModelAdmin):
 
 
 @admin.register(Geofence)
-class GeofenceAdmin(admin.ModelAdmin):
-    list_display = ['name', 'organization', 'geofence_type', 'radius', 'is_active', 'created_at']
+class GeofenceAdmin(GISModelAdmin):
+    list_display = ['name', 'organization', 'geofence_type', 'is_active', 'created_at']
     list_filter = ['organization', 'geofence_type', 'is_active', 'created_at']
     search_fields = ['name', 'description']
     readonly_fields = ['created_at']
@@ -100,7 +101,7 @@ class GeofenceAdmin(admin.ModelAdmin):
 
 
 @admin.register(GeofenceAlert)
-class GeofenceAlertAdmin(admin.ModelAdmin):
+class GeofenceAlertAdmin(GISModelAdmin):
     list_display = ['vehicle', 'geofence', 'alert_type', 'timestamp', 'acknowledged', 'acknowledged_by']
     list_filter = ['alert_type', 'acknowledged', 'timestamp']
     search_fields = ['vehicle__plate', 'geofence__name']

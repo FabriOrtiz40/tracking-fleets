@@ -4,6 +4,8 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from django.db.models import Q, Count, Avg, Sum, Max, F
+from django.contrib.gis.measure import D
+from django.contrib.gis.geos import Point
 from datetime import timedelta
 
 from .models import (
@@ -124,9 +126,9 @@ class VehicleViewSet(viewsets.ModelViewSet):
         if vehicle_type:
             queryset = queryset.filter(type=vehicle_type)
 
-        status_param = self.request.query_params.get('status', None)
-        if status_param:
-            queryset = queryset.filter(status=status_param)
+        status = self.request.query_params.get('status', None)
+        if status:
+            queryset = queryset.filter(status=status)
 
         is_active = self.request.query_params.get('active', None)
         if is_active:
@@ -137,18 +139,15 @@ class VehicleViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def current_location(self, request, pk=None):
         vehicle = self.get_object()
-        if not vehicle.last_latitude or not vehicle.last_longitude:
+        if not vehicle.last_location:
             return Response({'detail': 'No location data available'}, status=status.HTTP_404_NOT_FOUND)
 
         latest_location = vehicle.location_history.first()
-        serializer = LocationHistorySerializer(latest_location) if latest_location else None
+        serializer = LocationHistorySerializer(latest_location)
 
         return Response({
             'vehicle': vehicle.plate,
-            'latitude': vehicle.last_latitude,
-            'longitude': vehicle.last_longitude,
-            'last_updated': vehicle.last_updated,
-            'location_detail': serializer.data if serializer else None,
+            'location': serializer.data,
             'is_moving': vehicle.is_moving(),
             'current_speed': vehicle.get_current_speed()
         })
@@ -196,26 +195,18 @@ class VehicleViewSet(viewsets.ModelViewSet):
     def nearby(self, request):
         latitude = request.query_params.get('latitude')
         longitude = request.query_params.get('longitude')
-        radius = float(request.query_params.get('radius', 5000))  # meters
+        radius = float(request.query_params.get('radius', 5000))
 
         if not latitude or not longitude:
             return Response({'error': 'latitude and longitude are required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        lat = float(latitude)
-        lon = float(longitude)
+        point = Point(float(longitude), float(latitude))
+        vehicles = Vehicle.objects.filter(
+            last_location__distance_lte=(point, D(m=radius)),
+            is_active=True
+        ).distance(point).order_by('distance')
 
-        # Encontrar vehículos cercanos usando haversine
-        nearby_vehicles = []
-        for vehicle in Vehicle.objects.filter(is_active=True, last_latitude__isnull=False):
-            distance_km = LocationHistory.haversine_distance(
-                lat, lon,
-                vehicle.last_latitude, vehicle.last_longitude
-            )
-            distance_m = distance_km * 1000
-            if distance_m <= radius:
-                nearby_vehicles.append(vehicle)
-
-        serializer = VehicleListSerializer(nearby_vehicles, many=True)
+        serializer = VehicleListSerializer(vehicles, many=True)
         return Response(serializer.data)
 
 
@@ -255,7 +246,7 @@ class LocationHistoryViewSet(viewsets.ModelViewSet):
         )
 
         for geofence in geofences:
-            if geofence.contains_point(location.latitude, location.longitude):
+            if geofence.contains_point(location.location):
                 recent_alert = GeofenceAlert.objects.filter(
                     vehicle=vehicle,
                     geofence=geofence,
@@ -268,8 +259,7 @@ class LocationHistoryViewSet(viewsets.ModelViewSet):
                         geofence=geofence,
                         vehicle=vehicle,
                         alert_type='entry',
-                        latitude=location.latitude,
-                        longitude=location.longitude
+                        location=location.location
                     )
 
         headers = self.get_success_headers(serializer.data)
@@ -295,9 +285,9 @@ class TripViewSet(viewsets.ModelViewSet):
         if driver_id:
             queryset = queryset.filter(driver_id=driver_id)
 
-        status_param = self.request.query_params.get('status', None)
-        if status_param:
-            queryset = queryset.filter(status=status_param)
+        status = self.request.query_params.get('status', None)
+        if status:
+            queryset = queryset.filter(status=status)
 
         return queryset
 
@@ -310,7 +300,8 @@ class TripViewSet(viewsets.ModelViewSet):
         if not latitude or not longitude:
             return Response({'error': 'latitude and longitude are required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        trip.complete_trip(float(latitude), float(longitude))
+        end_location = Point(float(longitude), float(latitude))
+        trip.complete_trip(end_location)
 
         serializer = self.get_serializer(trip)
         return Response(serializer.data)
@@ -343,12 +334,11 @@ class GeofenceViewSet(viewsets.ModelViewSet):
         vehicles = Vehicle.objects.filter(
             organization=geofence.organization,
             is_active=True,
-            last_latitude__isnull=False,
-            last_longitude__isnull=False
+            last_location__isnull=False
         )
 
         for vehicle in vehicles:
-            if geofence.contains_point(vehicle.last_latitude, vehicle.last_longitude):
+            if geofence.contains_point(vehicle.last_location):
                 vehicles_inside.append(vehicle)
 
         serializer = VehicleListSerializer(vehicles_inside, many=True)

@@ -1,8 +1,7 @@
-from django.contrib.gis.db import models
+from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
-from django.contrib.gis.geos import Point
-from django.contrib.gis.measure import D
+from math import radians, cos, sin, asin, sqrt
 
 
 class Organization(models.Model):
@@ -63,7 +62,9 @@ class Vehicle(models.Model):
     year = models.IntegerField(null=True, blank=True)
     vin = models.CharField(max_length=17, blank=True, help_text='Vehicle Identification Number')
 
-    last_location = models.PointField(null=True, blank=True)
+    # Ubicación usando coordenadas simples
+    last_latitude = models.FloatField(null=True, blank=True, help_text='Last known latitude')
+    last_longitude = models.FloatField(null=True, blank=True, help_text='Last known longitude')
     last_updated = models.DateTimeField(auto_now=True)
 
     current_driver = models.ForeignKey(Driver, on_delete=models.SET_NULL, null=True, blank=True, related_name='current_vehicle')
@@ -90,11 +91,15 @@ class Vehicle(models.Model):
 
     class Meta:
         ordering = ['plate']
+        indexes = [
+            models.Index(fields=['last_latitude', 'last_longitude']),
+        ]
 
 
 class LocationHistory(models.Model):
     vehicle = models.ForeignKey(Vehicle, on_delete=models.CASCADE, related_name='location_history')
-    location = models.PointField()
+    latitude = models.FloatField()
+    longitude = models.FloatField()
     timestamp = models.DateTimeField(default=timezone.now, db_index=True)
     speed = models.FloatField(default=0.0, help_text='Speed in km/h')
     heading = models.FloatField(null=True, blank=True, help_text='Direction in degrees (0-360)')
@@ -107,11 +112,27 @@ class LocationHistory(models.Model):
     def __str__(self):
         return f"{self.vehicle.plate} - {self.timestamp}"
 
+    @staticmethod
+    def haversine_distance(lat1, lon1, lat2, lon2):
+        """
+        Calculate the great circle distance between two points
+        on the earth (specified in decimal degrees)
+        Returns distance in kilometers
+        """
+        lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+        dlon = lon2 - lon1
+        dlat = lat2 - lat1
+        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+        c = 2 * asin(sqrt(a))
+        r = 6371  # Radius of earth in kilometers
+        return c * r
+
     class Meta:
         ordering = ['-timestamp']
         indexes = [
             models.Index(fields=['vehicle', '-timestamp']),
             models.Index(fields=['timestamp']),
+            models.Index(fields=['latitude', 'longitude']),
         ]
 
 
@@ -127,8 +148,12 @@ class Trip(models.Model):
 
     start_time = models.DateTimeField(default=timezone.now)
     end_time = models.DateTimeField(null=True, blank=True)
-    start_location = models.PointField()
-    end_location = models.PointField(null=True, blank=True)
+
+    # Ubicaciones de inicio y fin
+    start_latitude = models.FloatField()
+    start_longitude = models.FloatField()
+    end_latitude = models.FloatField(null=True, blank=True)
+    end_longitude = models.FloatField(null=True, blank=True)
 
     distance = models.FloatField(null=True, blank=True, help_text='Total distance in km')
     duration = models.DurationField(null=True, blank=True)
@@ -144,9 +169,10 @@ class Trip(models.Model):
     def __str__(self):
         return f"Trip {self.id} - {self.vehicle.plate}"
 
-    def complete_trip(self, end_location):
+    def complete_trip(self, end_latitude, end_longitude):
         self.end_time = timezone.now()
-        self.end_location = end_location
+        self.end_latitude = end_latitude
+        self.end_longitude = end_longitude
         self.duration = self.end_time - self.start_time
         self.status = 'completed'
         self.calculate_stats()
@@ -168,7 +194,10 @@ class Trip(models.Model):
             prev_loc = None
             for loc in locations:
                 if prev_loc:
-                    total_distance += prev_loc.location.distance(loc.location) / 1000
+                    total_distance += LocationHistory.haversine_distance(
+                        prev_loc.latitude, prev_loc.longitude,
+                        loc.latitude, loc.longitude
+                    )
                 prev_loc = loc
             self.distance = total_distance
 
@@ -183,7 +212,6 @@ class Trip(models.Model):
 class Geofence(models.Model):
     GEOFENCE_TYPES = [
         ('circle', 'Circle'),
-        ('polygon', 'Polygon'),
     ]
 
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name='geofences')
@@ -191,9 +219,10 @@ class Geofence(models.Model):
     description = models.TextField(blank=True)
     geofence_type = models.CharField(max_length=10, choices=GEOFENCE_TYPES, default='circle')
 
-    center = models.PointField(null=True, blank=True, help_text='Center point for circle geofence')
-    radius = models.FloatField(null=True, blank=True, help_text='Radius in meters for circle geofence')
-    polygon = models.PolygonField(null=True, blank=True, help_text='Polygon boundary')
+    # Solo soportamos círculos por ahora
+    center_latitude = models.FloatField(help_text='Center latitude for circle geofence')
+    center_longitude = models.FloatField(help_text='Center longitude for circle geofence')
+    radius = models.FloatField(help_text='Radius in meters for circle geofence')
 
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -201,11 +230,15 @@ class Geofence(models.Model):
     def __str__(self):
         return self.name
 
-    def contains_point(self, point):
-        if self.geofence_type == 'circle' and self.center and self.radius:
-            return self.center.distance(point) <= self.radius
-        elif self.geofence_type == 'polygon' and self.polygon:
-            return self.polygon.contains(point)
+    def contains_point(self, latitude, longitude):
+        """Check if a point is inside the geofence"""
+        if self.geofence_type == 'circle':
+            distance_km = LocationHistory.haversine_distance(
+                self.center_latitude, self.center_longitude,
+                latitude, longitude
+            )
+            distance_m = distance_km * 1000
+            return distance_m <= self.radius
         return False
 
     class Meta:
@@ -222,7 +255,8 @@ class GeofenceAlert(models.Model):
     vehicle = models.ForeignKey(Vehicle, on_delete=models.CASCADE, related_name='geofence_alerts')
     alert_type = models.CharField(max_length=10, choices=ALERT_TYPES)
     timestamp = models.DateTimeField(default=timezone.now)
-    location = models.PointField()
+    latitude = models.FloatField()
+    longitude = models.FloatField()
     acknowledged = models.BooleanField(default=False)
     acknowledged_at = models.DateTimeField(null=True, blank=True)
     acknowledged_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
